@@ -6,7 +6,6 @@ import typing as T
 from dataclasses import dataclass
 
 import torch
-import torch.nn as nn
 from openfold.data.data_transforms import make_atom14_masks
 from openfold.np import residue_constants
 from openfold.utils.loss import compute_predicted_aligned_error, compute_tm
@@ -79,9 +78,6 @@ class ESMFold(nn.Module):
             nn.Linear(cfg.lddt_head_hid_dim, 37 * self.lddt_bins),
         )
 
-    def test(self):
-        print('testing')
-
     @staticmethod
     def _af2_to_esm(d: Alphabet):
         # Remember that t is shifted from residue_constants by 1 (0 is padding).
@@ -130,6 +126,7 @@ class ESMFold(nn.Module):
         num_recycles: T.Optional[int] = None,
         residue_index_offset: T.Optional[int] = 512,
         chain_linker: T.Optional[str] = "G" * 25,
+        device: T.Optional[str] = 'cpu',
     ):
         """Runs a forward pass given input sequences.
 
@@ -159,9 +156,14 @@ class ESMFold(nn.Module):
         elif not isinstance(residx, torch.Tensor):
             residx = collate_dense_tensors(residx)
 
-        aatype, mask, residx, linker_mask = map(
-            lambda x: x.to(self.device), (aatype, mask, residx, linker_mask)
-        )
+        if device is not None:
+            aatype, mask, residx, linker_mask = map(
+                lambda x: x.to(device), (aatype, mask, residx, linker_mask)
+            )
+        else:
+            aatype, mask, residx, linker_mask = map(
+                lambda x: x.to(device), (aatype, mask, residx, linker_mask)
+            )
 
         return aatype, mask, residx, linker_mask
 
@@ -188,7 +190,6 @@ class ESMFold(nn.Module):
                 num_recycles (int): How many recycle iterations to perform. If None, defaults to training max
                     recycles, which is 3.
             """
-
             if mask is None:
                 mask = torch.ones_like(aa)
 
@@ -199,14 +200,14 @@ class ESMFold(nn.Module):
             if residx is None:
                 residx = torch.arange(L, device=device).expand_as(aa)
 
-            # === ESM ===
+
+            # === ESM === Convert to ESM indices from OpenFold indices
             esmaa = self._af2_idx_to_esm_idx(aa, mask)
 
             if masking_pattern is not None:
                 esmaa = self._mask_inputs_to_esm(esmaa, masking_pattern)
-
+    
             esm_s = self._compute_language_model_representations(esmaa)
-
             # Convert esm_s to the precision used by the trunk and
             # the structure module. These tensors may be a lower precision if, for example,
             # we're running the language model in fp16 precision.
@@ -216,7 +217,7 @@ class ESMFold(nn.Module):
 
             # === preprocessing ===
             esm_s = (self.esm_s_combine.softmax(0).unsqueeze(0) @ esm_s).squeeze(2)
-
+            
             s_s_0 = self.esm_s_mlp(esm_s)
             s_z_0 = s_s_0.new_zeros(B, L, L, self.cfg.trunk.pairwise_state_dim)
 
@@ -319,7 +320,6 @@ class ESMFold(nn.Module):
             num_recycles (int): How many recycle iterations to perform. If None, defaults to training max
                 recycles, which is 3.
         """
-
         if mask is None:
             mask = torch.ones_like(aa)
 
@@ -337,7 +337,6 @@ class ESMFold(nn.Module):
             esmaa = self._mask_inputs_to_esm(esmaa, masking_pattern)
 
         esm_s = self._compute_language_model_representations(esmaa)
-
         # Convert esm_s to the precision used by the trunk and
         # the structure module. These tensors may be a lower precision if, for example,
         # we're running the language model in fp16 precision.
@@ -349,6 +348,7 @@ class ESMFold(nn.Module):
         esm_s = (self.esm_s_combine.softmax(0).unsqueeze(0) @ esm_s).squeeze(2)
 
         s_s_0 = self.esm_s_mlp(esm_s)
+
         s_z_0 = s_s_0.new_zeros(B, L, L, self.cfg.trunk.pairwise_state_dim)
 
         s_s_0 += self.embedding(aa)
